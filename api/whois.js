@@ -1,4 +1,4 @@
-// File: api/whois.js (IANA referral, then specific RIR like ARIN, APNIC, RIPE)
+// File: api/whois.js (IANA referral, then specific RIR like ARIN, APNIC, RIPE - CORRECTED)
 const net = require('net');
 
 const IANA_WHOIS_SERVER = 'whois.iana.org';
@@ -8,15 +8,14 @@ const QUERY_TIMEOUT = 8000; // 8 seconds
 // Known RIR WHOIS servers (add more if needed)
 const RIR_SERVERS = {
   ARIN: 'whois.arin.net',
-  RIPE: 'whois.ripe.net',
+  RIPE: 'whois.ripe.net', // Ensure RIPE is here
   APNIC: 'whois.apnic.net',
   LACNIC: 'whois.lacnic.net',
   AFRINIC: 'whois.afrinic.net',
-  // Add other common referral targets if IANA uses them
-  "whois.verisign-grs.com": "whois.verisign-grs.com" // For .com/.net TLDs if query is a domain
+  "whois.verisign-grs.com": "whois.verisign-grs.com"
 };
 
-// Helper function to perform a WHOIS query
+// Helper function to perform a WHOIS query (same as before)
 function queryWhoisServer(server, port, queryText, serverFriendlyName) {
   return new Promise((resolve, reject) => {
     let whoisData = '';
@@ -67,10 +66,9 @@ function queryWhoisServer(server, port, queryText, serverFriendlyName) {
   });
 }
 
-// Function to parse referral from IANA data
+// Function to parse referral from IANA data (same as before)
 function parseReferral(ianaData) {
   if (!ianaData) return null;
-  // Look for "whois:" or "refer:" lines
   const patterns = [
     /whois:\s*([a-zA-Z0-9.-]+)/i,
     /refer:\s*([a-zA-Z0-9.-]+)/i
@@ -79,15 +77,13 @@ function parseReferral(ianaData) {
     const match = ianaData.match(pattern);
     if (match && match[1]) {
       const server = match[1].trim().toLowerCase();
-      // Map known RIR server hostnames to a canonical name if needed, or just return the hostname
       for (const rir in RIR_SERVERS) {
         if (RIR_SERVERS[rir].toLowerCase() === server) {
           return { name: rir, server: RIR_SERVERS[rir] };
         }
       }
-      // If not a known RIR, but still a referral, return it
-      if (server !== IANA_WHOIS_SERVER.toLowerCase()){ // Avoid self-referral loop
-          return { name: server, server: server }; // Use server hostname as name
+      if (server !== IANA_WHOIS_SERVER.toLowerCase()){
+          return { name: server, server: server }; 
       }
     }
   }
@@ -114,7 +110,6 @@ module.exports = async (req, res) => {
     console.log(`[Vercel Function] Starting WHOIS process for: ${query}`);
     let authoritativeRir = null;
 
-    // 1. Query IANA if it's an IP address
     const isIpAddress = /^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$/.test(query);
     if (isIpAddress) {
       try {
@@ -127,7 +122,7 @@ module.exports = async (req, res) => {
         if (authoritativeRir) {
           console.log(`[Vercel Function] IANA referred to ${authoritativeRir.name} (${authoritativeRir.server}) for ${query}`);
         } else {
-          console.log(`[Vercel Function] No clear WHOIS server referral from IANA for ${query}.`);
+          console.log(`[Vercel Function] No clear WHOIS server referral from IANA for ${query}. Will use default for specific RIR query.`);
         }
       } catch (ianaError) {
         console.error(`[Vercel Function] Error querying IANA for ${query}:`, ianaError.message);
@@ -135,30 +130,28 @@ module.exports = async (req, res) => {
       }
     } else {
       finalReport += `\n--- Query '${query}' is not an IPv4 address. Skipping IANA pre-lookup. Attempting general WHOIS. ---\n\n`;
-      // For non-IPs (domains), we could try a generic .com/.net server, or just a default.
-      // For this example, we'll let it fall through to a default or specific logic later.
-      // A more robust solution would check TLD and query appropriate TLD WHOIS server.
     }
 
-    // 2. Query the specific RIR (if referred) or a default
-    let serverToQuery = RIPE_WHOIS_SERVER; // Default if no other logic applies
+    // === CORRECTED PART ===
+    let serverToQuery = RIR_SERVERS.RIPE; // Default to RIPE from our RIR_SERVERS object
     let serverFriendlyName = "RIPE NCC (Default)";
+    // === END CORRECTED PART ===
 
     if (authoritativeRir && authoritativeRir.server) {
       serverToQuery = authoritativeRir.server;
       serverFriendlyName = authoritativeRir.name;
     } else if (!isIpAddress) {
-      // Rudimentary domain handling: if it's a .com or .net, try verisign.
-      // This is VERY basic and not a full domain WHOIS solution.
       if (query.toLowerCase().endsWith('.com') || query.toLowerCase().endsWith('.net')) {
-        serverToQuery = RIR_SERVERS["whois.verisign-grs.com"]; // Get from our RIR_SERVERS map
+        serverToQuery = RIR_SERVERS["whois.verisign-grs.com"]; 
         serverFriendlyName = "Verisign (.com/.net)";
       } else {
-         finalReport += `\n--- Full WHOIS for domain '${query}' is complex and may require multiple lookups not implemented here. Attempting query against ${serverFriendlyName}. ---\n\n`;
+         // Keep default serverToQuery (RIPE) for other non-IPs or add more logic
+         finalReport += `\n--- Full WHOIS for domain '${query}' is complex. Attempting query against ${serverFriendlyName} (${serverToQuery}). ---\n\n`;
       }
     }
     
     // Only query the specific RIR if it's different from IANA or if IANA query failed/skipped
+    // Or if it's a domain name, in which case IANA wasn't queried for referral in the same way
     if (serverToQuery.toLowerCase() !== IANA_WHOIS_SERVER.toLowerCase() || !isIpAddress) {
         try {
             console.log(`[Vercel Function] Querying ${serverFriendlyName} (${serverToQuery}) for: ${query}`);
@@ -170,8 +163,9 @@ module.exports = async (req, res) => {
             console.error(`[Vercel Function] Error querying ${serverFriendlyName} (${serverToQuery}) for ${query}:`, rirError.message);
             finalReport += `\n--- Error Querying ${serverFriendlyName} (${serverToQuery}) ---\n${rirError.message}\n-----------------------------------------------------------\n`;
         }
-    } else if (authoritativeRir && serverToQuery.toLowerCase() === IANA_WHOIS_SERVER.toLowerCase()) {
-        finalReport += `\n--- IANA response above is considered authoritative for ${query}. ---\n`;
+    } else if (isIpAddress && authoritativeRir && serverToQuery.toLowerCase() === IANA_WHOIS_SERVER.toLowerCase()) {
+        // This case means IANA referred to itself, so its initial response is considered authoritative.
+        finalReport += `\n--- IANA response above is considered authoritative for IP '${query}'. ---\n`;
     }
 
 
