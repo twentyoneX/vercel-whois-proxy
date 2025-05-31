@@ -1,5 +1,8 @@
-// api/whois.js (Modified for ipwhois.app JSON)
-const fetch = require('node-fetch');
+// api/whois.js (Conceptual for direct RIPE query)
+const net = require('net');
+
+const RIPE_WHOIS_SERVER = 'whois.ripe.net';
+const WHOIS_PORT = 43;
 
 module.exports = async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -13,48 +16,47 @@ module.exports = async (req, res) => {
     return res.status(400).send('Query parameter "q" is required.');
   }
 
-  try {
-    const targetApiUrl = `https://ipwhois.app/json/${encodeURIComponent(query)}`;
-    console.log(`[Vercel Function] Proxying JSON request for ${query} to ${targetApiUrl}`);
+  // For this example, we assume the query is an IP that RIPE handles
+  // In a real app, you'd need logic to determine the correct RIR
+  // Or if it's a domain, use a different process.
 
-    const apiResponse = await fetch(targetApiUrl, {
-      method: 'GET',
-      headers: { 'User-Agent': 'Vercel-WHOIS-Proxy/1.0 (Node.js Fetch)' }
-    });
+  let whoisData = '';
+  const client = new net.Socket();
 
-    const data = await apiResponse.json(); // Expect JSON
+  client.connect(WHOIS_PORT, RIPE_WHOIS_SERVER, () => {
+    console.log(`[Vercel Function] Connected to RIPE WHOIS for query: ${query}`);
+    client.write(`${query}\r\n`); // Send the query followed by CRLF
+  });
 
-    if (!apiResponse.ok || data.success === false) {
-      console.error(`[Vercel Function] ipwhois.app returned error for query ${query}. Status: ${apiResponse.status}, Data:`, data);
-      res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-      return res.status(apiResponse.status).send(`Error from upstream provider: ${data.message || 'Failed to fetch data'}`);
+  client.on('data', (data) => {
+    whoisData += data.toString();
+  });
+
+  client.on('end', () => {
+    console.log('[Vercel Function] RIPE WHOIS connection ended.');
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    if (whoisData.trim() === "") {
+        return res.status(200).send(`No WHOIS data found or an empty response was received from ${RIPE_WHOIS_SERVER} for ${query}.`);
     }
+    res.status(200).send(whoisData);
+    client.destroy(); // Ensure socket is destroyed
+  });
 
-    // Format the JSON into a WHOIS-like text report
-    let report = `WHOIS-like Report for: ${data.ip || query}\n`;
-    report += `-------------------------------------------------\n`;
-    if(data.type) report += `Type:            ${data.type}\n`;
-    if(data.country) report += `Country:         ${data.country} (${data.country_code})\n`;
-    if(data.region) report += `Region:          ${data.region}\n`;
-    if(data.city) report += `City:            ${data.city}\n`;
-    if(data.latitude) report += `Latitude:        ${data.latitude}\n`;
-    if(data.longitude) report += `Longitude:       ${data.longitude}\n`;
-    if(data.isp) report += `ISP:             ${data.isp}\n`;
-    if(data.org) report += `Organization:    ${data.org}\n`;
-    if(data.asn) report += `ASN:             ${data.asn}\n`;
-    if(data.as) report +=  `AS Name:         ${data.as}\n`; // Sometimes 'as', sometimes 'asn_description' etc.
-    // For domains, ipwhois.app is limited for deep WHOIS, but might have some info
-    if(data.domain) report += `Domain Queried:  ${data.domain}\n`;
-    if(data.domain_registrar && data.domain_registrar.name) report += `Registrar:       ${data.domain_registrar.name}\n`;
-
-    // Add more fields as needed based on ipwhois.app's JSON structure
-
+  client.on('error', (err) => {
+    console.error('[Vercel Function] RIPE WHOIS connection error:', err.message);
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-    res.status(200).send(report);
+    res.status(502).send(`Error connecting to WHOIS server (${RIPE_WHOIS_SERVER}): ${err.message}`);
+    client.destroy(); // Ensure socket is destroyed
+  });
 
-  } catch (error) {
-    console.error('[Vercel Function] Error in WHOIS proxy (JSON):', error.message, error.stack);
+  client.on('timeout', () => {
+    console.error('[Vercel Function] RIPE WHOIS connection timed out.');
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-    res.status(500).send('Internal server error processing WHOIS request.');
-  }
+    res.status(504).send(`Connection to WHOIS server (${RIPE_WHOIS_SERVER}) timed out for query ${query}.`);
+    client.destroy();
+  });
+  
+  // Set a timeout for the whole operation on Vercel (max execution time for Hobby plan is 10s-60s)
+  // This client-side timeout is just for the socket connection itself.
+  client.setTimeout(8000); // 8 seconds timeout for the socket
 };
